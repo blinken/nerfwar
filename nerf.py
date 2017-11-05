@@ -22,7 +22,7 @@ GPIO_TURNTABLE = 12 # servo
 # How long should we warmup and fire for? (seconds)
 WARMUP_DELAY = 2
 FIRE_TIME = 2
-AIM_DELAY = 3 # how long to turn to position (fire delay is aim_delay + warmup_delay)
+AIM_DELAY = 3 # how long to turn to position (TTFN is max(aim_delay, warmup_delay))
 
 DEGREE = u'°'
 
