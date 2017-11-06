@@ -15,8 +15,8 @@ import json
 from threading import Thread, Condition
 
 # GPIO mappings
-GPIO_WARMUP = 10 # active low
-GPIO_TRIGGER = 11 # active low
+GPIO_WARMUP = 18 # active low
+GPIO_TRIGGER = 17 # active low
 GPIO_TURNTABLE = 14 # servo
 
 # 0 and 180 values for the servo
@@ -31,6 +31,12 @@ AIM_DELAY = 3 # how long to turn to position (TTFN is max(aim_delay, warmup_dela
 DEGREE = u'°'
 
 gpio = pigpio.pi()
+gpio.set_mode(GPIO_WARMUP, pigpio.OUTPUT)
+gpio.write(GPIO_WARMUP, 1)
+
+gpio.set_mode(GPIO_TRIGGER, pigpio.OUTPUT)
+gpio.write(GPIO_TRIGGER, 1)
+
 gpio.set_mode(GPIO_TURNTABLE, pigpio.OUTPUT)
 gpio.set_servo_pulsewidth(GPIO_TURNTABLE, SERVO_MIN)
 
@@ -42,31 +48,25 @@ camera.hflip = True
 
 def init():
 
-  #GPIO.setup(GPIO_WARMUP, GPIO.OUT)
-  #GPIO.setup(GPIO_TRIGGER, GPIO.OUT)
-
-  #GPIO.output(GPIO_WARMUP, 1)
-  #GPIO.output(GPIO_TRIGGER, 1)
-
   print "init: done\n",
 
 def fire():
   flag_fired.acquire()
 
   print "fire: warming up\n",
-  #GPIO.output(GPIO_WARMUP, 0)
+  gpio.write(GPIO_WARMUP, 0)
   time.sleep(WARMUP_DELAY)
 
   print "fire: waiting for aim\n",
   flag_aimed.acquire()
 
   print "fire: firing\n",
-  #GPIO.OUTPUT(GPIO_TRIGGER, 0)
+  gpio.write(GPIO_TRIGGER, 0)
   time.sleep(FIRE_TIME)
 
   print "fire: shutting down\n",
-  #GPIO.OUTPUT(GPIO_TRIGGER, 1)
-  #GPIO.OUTPUT(GPIO_WARMUP, 1)
+  gpio.write(GPIO_TRIGGER, 1)
+  gpio.write(GPIO_WARMUP, 1)
 
   print "fire: done\n",
   flag_aimed.release()
@@ -152,7 +152,7 @@ def get_face_coordinate(filename):
 # given a face coordinate in percent on the horizontal axis, calculate the
 # angle 0-180 to move to
 def get_firing_angle(face_coordinate):
-  angle = (face_coordinate / 100) * 180
+  angle = (face_coordinate / 100) * 60
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
@@ -161,6 +161,8 @@ def shutdown():
 
 if __name__ == "__main__":
   init()
+  #gpio.set_servo_pulsewidth(GPIO_TURNTABLE, 2200)
+  #raise SystemExit
   rest()
 
   while True:
