@@ -6,8 +6,8 @@
 #  * calibrate get_firing_angle
 #  * do we want to perhaps only return to the rest position if no faces detected after some delay?
 
-#import RPi.GPIO as GPIO
-#import picamera # sudo apt-get install python-picamera
+import pigpio
+import picamera
 
 import time
 import boto3
@@ -17,7 +17,11 @@ from threading import Thread, Condition
 # GPIO mappings
 GPIO_WARMUP = 10 # active low
 GPIO_TRIGGER = 11 # active low
-GPIO_TURNTABLE = 12 # servo
+GPIO_TURNTABLE = 14 # servo
+
+# 0 and 180 values for the servo
+SERVO_MIN = 500
+SERVO_MAX = 2250
 
 # How long should we warmup and fire for? (seconds)
 WARMUP_DELAY = 2
@@ -26,22 +30,23 @@ AIM_DELAY = 3 # how long to turn to position (TTFN is max(aim_delay, warmup_dela
 
 DEGREE = u'°'
 
-#pwm = GPIO.PWM(GPIO_TURNTABLE, 100)
-#pwm.start(5)
+gpio = pigpio.pi()
+gpio.set_mode(GPIO_TURNTABLE, pigpio.OUTPUT)
+gpio.set_servo_pulsewidth(GPIO_TURNTABLE, SERVO_MIN)
 
 flag_aimed = Condition()
 flag_fired = Condition()
+camera = picamera.PiCamera(resolution="VGA")
+camera.rotation = 180
+camera.hflip = True
 
 def init():
-  #GPIO.setmode(GPIO.BCM)
 
   #GPIO.setup(GPIO_WARMUP, GPIO.OUT)
   #GPIO.setup(GPIO_TRIGGER, GPIO.OUT)
-  #GPIO.setup(GPIO_TURNTABLE, GPIO.OUT)
 
   #GPIO.output(GPIO_WARMUP, 1)
   #GPIO.output(GPIO_TRIGGER, 1)
-  #GPIO.output(GPIO_TURNTABLE, 1)
 
   print "init: done\n",
 
@@ -74,8 +79,8 @@ def aim(angle, reason):
     raise Exception("Angle must be between 0%s and 180%s, got %d" % (DEGREE, DEGREE, angle))
 
   print "aim: moving to %.2f%s (%s)\n" % (angle, DEGREE, reason),
-  duty = float(angle) / 10.0 + 2.5
-  #pwm.ChangeDutyCycle(duty)
+  duty = (float(angle) / 180.0) * (SERVO_MAX - SERVO_MIN) + SERVO_MIN
+  gpio.set_servo_pulsewidth(GPIO_TURNTABLE, duty)
   time.sleep(AIM_DELAY)
 
   flag_aimed.release()
@@ -88,12 +93,15 @@ def rest():
 
   flag_fired.acquire()
   print "rest: moving to rest position\n",
-  aim(180, "rest")
+  if gpio.get_servo_pulsewidth(GPIO_TURNTABLE) != 0:
+      aim(180, "rest")
+      gpio.set_servo_pulsewidth(GPIO_TURNTABLE, 0)
+
   flag_fired.release()
 
 def get_image():
   # dummy
-  return "/Users/patrickcoleman/rekognition/pic2.jpg"
+  #return "/Users/patrickcoleman/rekognition/pic2.jpg"
 
   filename = "/tmp/nerf-input.jpg"
   print "camera: removing any existing %s" % filename
@@ -102,7 +110,7 @@ def get_image():
   except:
     pass
 
-  camera = picamera.PiCamera()
+  print "camera: taking photo"
   camera.capture(filename)
 
   return filename
@@ -131,7 +139,7 @@ def get_face_coordinate(filename):
   face=0
   for faceDetail in response['FaceDetails']:
     print "get_face_coordinate: face %d: age between %d and %d years old" % (face, faceDetail['AgeRange']['Low'], faceDetail['AgeRange']['High'])
-    print "get_face_coordinate: face %d: gender %s/%.2f, smile %s/%.2f, sunglasses %s/%.2f, beard %s/%.2f" % (face, faceDetail["Gender"]["Value"], faceDetail["Gender"]["Confidence"], faceDetail["Smile"]["Value"], faceDetail["Smile"]["Confidence"], faceDetail["Sunglasses"]["Value"], faceDetail["Sunglasses"]["Confidence"], faceDetail["Beard"]["Value"], faceDetail["Beard"]["Confidence"])
+    print "get_face_coordinate: face %d: gender %s/%.2f, smile %s/%.2f, glasses %s/%.2f, sunglasses %s/%.2f, beard %s/%.2f" % (face, faceDetail["Gender"]["Value"], faceDetail["Gender"]["Confidence"], faceDetail["Smile"]["Value"], faceDetail["Smile"]["Confidence"], faceDetail["Eyeglasses"]["Value"], faceDetail["Eyeglasses"]["Confidence"], faceDetail["Sunglasses"]["Value"], faceDetail["Sunglasses"]["Confidence"], faceDetail["Beard"]["Value"], faceDetail["Beard"]["Confidence"])
     bb = faceDetail['BoundingBox']
     print "get_face_coordinate: face %d: bounding box: height=%.2f left=%.2f top=%.2f width=%.2f" % (face, bb["Height"]*100, bb["Left"]*100, bb["Top"]*100, bb["Width"]*100)
     #print json.dumps(faceDetail, indent=4, sort_keys=True)
@@ -148,25 +156,26 @@ def get_firing_angle(face_coordinate):
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
+def shutdown():
+    camera.close()
+
 if __name__ == "__main__":
   init()
+  rest()
 
   while True:
-    t_rest = Thread(target=rest)
-    t_rest.start()
     try:
       filename = get_image()
       angle = get_firing_angle(get_face_coordinate(filename))
     except KeyboardInterrupt:
       print "main: shutting down"
-      t_rest.join()
+      shutdown()
       raise SystemExit
     except Exception as e:
       print e.message
-      t_rest.join()
+      t_rest = Thread(target=rest)
+      t_rest.start()
       continue
-
-    t_rest.join()
 
     t_aim = Thread(target=lambda: aim(angle, "fire"))
     t_aim.start()
