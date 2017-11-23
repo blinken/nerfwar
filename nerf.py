@@ -24,9 +24,9 @@ SERVO_MIN = 500
 SERVO_MAX = 2250
 
 # How long should we warmup and fire for? (seconds)
-WARMUP_DELAY = 2
-FIRE_TIME = 2
-AIM_DELAY = 3 # how long to turn to position (TTFN is max(aim_delay, warmup_delay))
+WARMUP_DELAY = 1
+FIRE_TIME = 0.7
+AIM_DELAY = 0.5 # how long to turn to position (TTFN is max(aim_delay, warmup_delay))
 
 DEGREE = u'°'
 
@@ -152,7 +152,7 @@ def get_face_coordinate(filename):
 # given a face coordinate in percent on the horizontal axis, calculate the
 # angle 0-180 to move to
 def get_firing_angle(face_coordinate):
-  angle = (face_coordinate / 100) * 60
+  angle = (face_coordinate / 100) * 230
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
@@ -162,8 +162,9 @@ def shutdown():
 if __name__ == "__main__":
   init()
   #gpio.set_servo_pulsewidth(GPIO_TURNTABLE, 2200)
+  #gpio.write(GPIO_TRIGGER, 1)
+  #gpio.write(GPIO_WARMUP, 1)
   #raise SystemExit
-  rest()
 
   while True:
     try:
