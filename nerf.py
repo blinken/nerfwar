@@ -9,10 +9,11 @@
 import pigpio
 import picamera
 
+import os
 import time
 import boto3
 import json
-from threading import Thread, Condition
+from threading import Thread, Condition, Event
 
 # GPIO mappings
 GPIO_WARMUP = 18 # active low
@@ -42,6 +43,8 @@ gpio.set_servo_pulsewidth(GPIO_TURNTABLE, SERVO_MIN)
 
 flag_aimed = Condition()
 flag_fired = Condition()
+flag_shutdown = Event()
+
 camera = picamera.PiCamera(resolution="VGA")
 camera.rotation = 180
 camera.hflip = True
@@ -100,31 +103,38 @@ def rest():
   flag_fired.release()
 
 def get_image():
-  # dummy
-  #return "/Users/patrickcoleman/rekognition/pic2.jpg"
+  while True:
+    if flag_shutdown.is_set():
+      print "camera: shutting down"
+      break
 
-  filename = "/tmp/nerf-input.jpg"
-  print "camera: removing any existing %s" % filename
-  try:
-    os.remove(filename)
-  except:
-    pass
+    filename = "/tmp/nerf-input.jpg"
+    print "camera: removing any existing %s" % filename
+    try:
+      os.remove(filename)
+    except:
+      pass
 
-  print "camera: taking photo"
-  camera.capture(filename)
+    print "camera: taking photo"
+    camera.capture(filename)
 
-  return filename
+    bucket = 'blinken-devel'
+    region = "eu-west-1"
+    key = "rekognition.jpg"
+
+    s3 = boto3.resource('s3', region)
+
+    print "get_face_coordinate: uploading %s to %s:%s" % (filename, bucket, key)
+    s3.meta.client.upload_file(filename, bucket, key)
+
+    time.sleep(1)
 
 # returns the horizontal coordinate for a face, normalised to 100
-def get_face_coordinate(filename):
+def get_face_coordinate():
   bucket = 'blinken-devel'
   region = "eu-west-1"
   key = "rekognition.jpg"
 
-  s3 = boto3.resource('s3', region)
-
-  print "get_face_coordinate: uploading %s to %s:%s" % (filename, bucket, key)
-  s3.meta.client.upload_file(filename, bucket, key)
 
   client=boto3.client('rekognition', region)
 
@@ -134,7 +144,7 @@ def get_face_coordinate(filename):
   if len(response['FaceDetails']) == 0:
     raise Exception("get_face_coordinates: no faces found")
 
-  print "get_face_coordinate: got %d faces for %s" % (len(response['FaceDetails']), filename)
+  print "get_face_coordinate: got %d faces" % (len(response['FaceDetails']))
 
   face=0
   for faceDetail in response['FaceDetails']:
@@ -152,11 +162,12 @@ def get_face_coordinate(filename):
 # given a face coordinate in percent on the horizontal axis, calculate the
 # angle 0-180 to move to
 def get_firing_angle(face_coordinate):
-  angle = (face_coordinate / 100) * 230
+  angle = 0.7053 * face_coordinate + 57.606
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
 def shutdown():
+    flag_shutdown.set()
     camera.close()
 
 if __name__ == "__main__":
@@ -166,18 +177,37 @@ if __name__ == "__main__":
   #gpio.write(GPIO_WARMUP, 1)
   #raise SystemExit
 
+  # Calibration
+#  angle = 90
+#  get_face_coordinate(get_image())
+#  while True:
+#    aim(angle, "fire")
+#    lr = raw_input("Left or right?")
+#    if lr == "l":
+#      angle += 10
+#    elif lr == "r":
+#      angle -= 10
+#    else:
+#      print "Invalid input"
+#    
+#    angle = min(180, angle)
+#    angle = max(0, angle)
+#
+  t_camera = Thread(target=lambda: get_image())
+  t_camera.start()
+
   while True:
+
     try:
-      filename = get_image()
-      angle = get_firing_angle(get_face_coordinate(filename))
+      angle = get_firing_angle(get_face_coordinate())
     except KeyboardInterrupt:
       print "main: shutting down"
       shutdown()
       raise SystemExit
     except Exception as e:
       print e.message
-      t_rest = Thread(target=rest)
-      t_rest.start()
+      #t_rest = Thread(target=rest)
+      #t_rest.start()
       continue
 
     t_aim = Thread(target=lambda: aim(angle, "fire"))
