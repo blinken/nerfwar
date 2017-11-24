@@ -9,7 +9,7 @@
 import pigpio
 import picamera
 
-import os
+import random
 import time
 import boto3
 import json
@@ -25,8 +25,8 @@ SERVO_MIN = 500
 SERVO_MAX = 2250
 
 # How long should we warmup and fire for? (seconds)
-WARMUP_DELAY = 1
-FIRE_TIME = 0.7
+WARMUP_DELAY = 0.7
+FIRE_TIME = 0.5
 AIM_DELAY = 0.5 # how long to turn to position (TTFN is max(aim_delay, warmup_delay))
 
 DEGREE = u'°'
@@ -41,43 +41,46 @@ gpio.write(GPIO_TRIGGER, 1)
 gpio.set_mode(GPIO_TURNTABLE, pigpio.OUTPUT)
 gpio.set_servo_pulsewidth(GPIO_TURNTABLE, SERVO_MIN)
 
-flag_aimed = Condition()
-flag_fired = Condition()
+flag_fire = Event()
 flag_shutdown = Event()
 
 camera = picamera.PiCamera(resolution="VGA")
 camera.rotation = 180
 camera.hflip = True
 
-def init():
+AWS_REGION = "eu-west-1"
+S3_BUCKET = 'blinken-devel'
+S3_KEY = "rekognition.jpg"
+s3_client = boto3.resource('s3', AWS_REGION)
+r_client = boto3.client('rekognition', AWS_REGION)
 
+def init():
   print "init: done\n",
 
 def fire():
-  flag_fired.acquire()
+  while True:
+    if flag_shutdown.is_set():
+      break
 
-  print "fire: warming up\n",
-  gpio.write(GPIO_WARMUP, 0)
-  time.sleep(WARMUP_DELAY)
+    flag_fire.wait()
 
-  print "fire: waiting for aim\n",
-  flag_aimed.acquire()
+    print "fire: warming up\n",
+    gpio.write(GPIO_WARMUP, 0)
+    time.sleep(WARMUP_DELAY)
 
-  print "fire: firing\n",
-  gpio.write(GPIO_TRIGGER, 0)
-  time.sleep(FIRE_TIME)
+    print "fire: firing\n",
+    gpio.write(GPIO_TRIGGER, 0)
+    time.sleep(FIRE_TIME)
 
-  print "fire: shutting down\n",
-  gpio.write(GPIO_TRIGGER, 1)
-  gpio.write(GPIO_WARMUP, 1)
+    print "fire: shutting down\n",
+    gpio.write(GPIO_TRIGGER, 1)
+    gpio.write(GPIO_WARMUP, 1)
 
-  print "fire: done\n",
-  flag_aimed.release()
-  flag_fired.release()
+    print "fire: done, sleeping 2\n",
+    time.sleep(2)
 
 # angle from 0..180
 def aim(angle, reason):
-  flag_aimed.acquire()
   if angle < 0 or angle > 180:
     raise Exception("Angle must be between 0%s and 180%s, got %d" % (DEGREE, DEGREE, angle))
 
@@ -86,21 +89,14 @@ def aim(angle, reason):
   gpio.set_servo_pulsewidth(GPIO_TURNTABLE, duty)
   time.sleep(AIM_DELAY)
 
-  flag_aimed.release()
-
   print "aim: done (%s)\n" % (reason),
 
 # move to the rest position
 def rest():
-  time.sleep(1)
-
-  flag_fired.acquire()
   print "rest: moving to rest position\n",
   if gpio.get_servo_pulsewidth(GPIO_TURNTABLE) != 0:
-      aim(180, "rest")
+      aim(0, "rest")
       gpio.set_servo_pulsewidth(GPIO_TURNTABLE, 0)
-
-  flag_fired.release()
 
 def get_image():
   while True:
@@ -118,43 +114,37 @@ def get_image():
     print "camera: taking photo"
     camera.capture(filename)
 
-    bucket = 'blinken-devel'
-    region = "eu-west-1"
-    key = "rekognition.jpg"
-
-    s3 = boto3.resource('s3', region)
-
-    print "get_face_coordinate: uploading %s to %s:%s" % (filename, bucket, key)
-    s3.meta.client.upload_file(filename, bucket, key)
+    print "camera: uploading %s to %s:%s" % (filename, S3_BUCKET, S3_KEY)
+    s3_client.meta.client.upload_file(filename, S3_BUCKET, S3_KEY)
+    print "camera: upload done"
 
     time.sleep(1)
 
 # returns the horizontal coordinate for a face, normalised to 100
 def get_face_coordinate():
-  bucket = 'blinken-devel'
-  region = "eu-west-1"
-  key = "rekognition.jpg"
-
-
-  client=boto3.client('rekognition', region)
-
   print "get_face_coordinate: running rekognition"
-  response = client.detect_faces(Image={'S3Object':{'Bucket':bucket,'Name':key}},Attributes=['ALL'])
-
-  if len(response['FaceDetails']) == 0:
-    raise Exception("get_face_coordinates: no faces found")
+  response = r_client.detect_faces(Image={'S3Object':{'Bucket':S3_BUCKET,'Name':S3_KEY}},Attributes=['ALL'])
 
   print "get_face_coordinate: got %d faces" % (len(response['FaceDetails']))
 
   face=0
-  for faceDetail in response['FaceDetails']:
+  bb = None
+  arr = response['FaceDetails']
+  random.shuffle(arr)
+  for faceDetail in arr:
     print "get_face_coordinate: face %d: age between %d and %d years old" % (face, faceDetail['AgeRange']['Low'], faceDetail['AgeRange']['High'])
     print "get_face_coordinate: face %d: gender %s/%.2f, smile %s/%.2f, glasses %s/%.2f, sunglasses %s/%.2f, beard %s/%.2f" % (face, faceDetail["Gender"]["Value"], faceDetail["Gender"]["Confidence"], faceDetail["Smile"]["Value"], faceDetail["Smile"]["Confidence"], faceDetail["Eyeglasses"]["Value"], faceDetail["Eyeglasses"]["Confidence"], faceDetail["Sunglasses"]["Value"], faceDetail["Sunglasses"]["Confidence"], faceDetail["Beard"]["Value"], faceDetail["Beard"]["Confidence"])
+    if faceDetail["Eyeglasses"]["Value"] == True:
+      print "get_face_coordinate: skipping face due to glasses"
+      continue
     bb = faceDetail['BoundingBox']
     print "get_face_coordinate: face %d: bounding box: height=%.2f left=%.2f top=%.2f width=%.2f" % (face, bb["Height"]*100, bb["Left"]*100, bb["Top"]*100, bb["Width"]*100)
     #print json.dumps(faceDetail, indent=4, sort_keys=True)
     face += 1
 
+  if bb == None:
+    raise Exception("get_face_coordinates: no faces found")
+    
   result = (bb["Left"] + bb["Width"]/2)*100
   print "get_face_coordinate: returning horizontal coordinate %.2f%% (face %d)" % (result, face)
   return result
@@ -162,12 +152,13 @@ def get_face_coordinate():
 # given a face coordinate in percent on the horizontal axis, calculate the
 # angle 0-180 to move to
 def get_firing_angle(face_coordinate):
-  angle = 0.7053 * face_coordinate + 57.606
+  angle = 0.7053 * face_coordinate + 57.606 # determined from calibration
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
 def shutdown():
     flag_shutdown.set()
+    rest()
     camera.close()
 
 if __name__ == "__main__":
@@ -195,9 +186,10 @@ if __name__ == "__main__":
 #
   t_camera = Thread(target=lambda: get_image())
   t_camera.start()
+  t_fire = Thread(target=fire)
+  t_fire.start()
 
   while True:
-
     try:
       angle = get_firing_angle(get_face_coordinate())
     except KeyboardInterrupt:
@@ -205,18 +197,16 @@ if __name__ == "__main__":
       shutdown()
       raise SystemExit
     except Exception as e:
+      # No faces found, or some other error
       print e.message
-      #t_rest = Thread(target=rest)
-      #t_rest.start()
+      flag_fire.clear()
       continue
 
     t_aim = Thread(target=lambda: aim(angle, "fire"))
     t_aim.start()
-    t_fire = Thread(target=fire)
-    t_fire.start()
 
+    flag_fire.set()
     t_aim.join()
-    t_fire.join()
 
 print "main: done\n",
 
