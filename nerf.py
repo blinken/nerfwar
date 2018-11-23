@@ -14,6 +14,7 @@ import time
 import boto3
 import json
 from threading import Thread, Condition, Event
+import paho.mqtt.client as mqtt
 
 # GPIO mappings
 GPIO_WARMUP = 18 # active low
@@ -43,6 +44,8 @@ gpio.set_servo_pulsewidth(GPIO_TURNTABLE, SERVO_MIN)
 
 flag_fire = Event()
 flag_shutdown = Event()
+
+global_angle = 90
 
 camera = picamera.PiCamera(resolution="VGA")
 camera.rotation = 180
@@ -156,10 +159,37 @@ def get_firing_angle(face_coordinate):
   print "get_firing_angle: returning angle %.2f%s for face location %.2f%%" % (angle, DEGREE, face_coordinate)
   return angle
 
+def get_mqtt_firing_angle(face_coordinate):
+  angle = -330.1886792 * face_coordinate + 166.509434
+  print "get_mqtt_firing_angle: returning angle %.2f%s for face location %.3f" % (angle, DEGREE, face_coordinate)
+  return angle
+
+
 def shutdown():
     flag_shutdown.set()
     rest()
     camera.close()
+
+# The callback for when the client receives a CONNACK response from the server.
+def on_connect(client, userdata, flags, rc):
+    print("Connected with result code "+str(rc))
+
+    # Subscribing in on_connect() means that if we lose the connection and
+    # reconnect then subscriptions will be renewed.
+    client.subscribe("/merakimv/Q2EV-2TWA-ZJDL/raw_detections")
+
+# The callback for when a PUBLISH message is received from the server.
+def on_message(client, userdata, msg):
+    try:
+        persons = map(lambda p: p['x0'] - p['x1'], json.loads(msg.payload)['objects'])
+      
+        global global_angle
+        global_angle = get_mqtt_firing_angle(min(persons))
+        print "person at %.2f" % global_angle
+        # [{u'frame': 8620, u'oid': 219, u'y1': 0.531, u'y0': 1, u'x0': 0.394, u'x1': 0.231, u'type': u'person'}]
+    except:
+      print "no person"
+      return
 
 if __name__ == "__main__":
   init()
@@ -168,30 +198,47 @@ if __name__ == "__main__":
   #gpio.write(GPIO_WARMUP, 1)
   #raise SystemExit
 
+  client = mqtt.Client()
+  client.on_connect = on_connect
+  client.on_message = on_message
+  
+  client.connect("localhost", 1883, 60)
+
+  ## Blocking call that processes network traffic, dispatches callbacks and
+  ## handles reconnecting.
+  ## Other loop*() functions are available that give a threaded interface and a
+  ## manual interface.
+  client.loop_start()
+
   # Calibration
-#  angle = 90
-#  get_face_coordinate(get_image())
-#  while True:
-#    aim(angle, "fire")
-#    lr = raw_input("Left or right?")
-#    if lr == "l":
-#      angle += 10
-#    elif lr == "r":
-#      angle -= 10
-#    else:
-#      print "Invalid input"
-#    
-#    angle = min(180, angle)
-#    angle = max(0, angle)
-#
-  t_camera = Thread(target=lambda: get_image())
-  t_camera.start()
-  t_fire = Thread(target=fire)
-  t_fire.start()
+  #angle = 90
+  ##get_face_coordinate(get_image())
+  #while True:
+  #  t_aim = Thread(target=lambda: aim(angle, "fire"))
+  #  t_aim.start()
+
+  #  flag_fire.set()
+  #  t_aim.join()
+  #  lr = raw_input("Left or right?")
+  #  if lr == "l":
+  #    angle += 10
+  #  elif lr == "r":
+  #    angle -= 10
+  #  else:
+  #    print "Invalid input"
+  #  
+  #  angle = min(180, angle)
+  #  angle = max(0, angle)
+
+  #t_camera = Thread(target=lambda: get_image())
+  #t_camera.start()
+  #t_fire = Thread(target=fire)
+  #t_fire.start()
 
   while True:
     try:
-      angle = get_firing_angle(get_face_coordinate())
+      #angle = get_firing_angle(get_face_coordinate())
+      angle = global_angle
     except KeyboardInterrupt:
       print "main: shutting down"
       shutdown()
