@@ -46,6 +46,7 @@ flag_fire = Event()
 flag_shutdown = Event()
 
 global_angle = 90
+global_person = False
 
 camera = picamera.PiCamera(resolution="VGA")
 camera.rotation = 180
@@ -62,9 +63,6 @@ def init():
 
 def fire():
   while True:
-    if flag_shutdown.is_set():
-      break
-
     flag_fire.wait()
 
     print "fire: warming up\n",
@@ -160,36 +158,46 @@ def get_firing_angle(face_coordinate):
   return angle
 
 def get_mqtt_firing_angle(face_coordinate):
-  angle = -330.1886792 * face_coordinate + 166.509434
+  #angle = -330.1886792 * face_coordinate + 166.509434
+  #angle = 1950.294861 * face_coordinate - 175.7792755
+  #angle = 450 * face_coordinate + 35
+  #angle = -450 * face_coordinate + 150
+  #angle = 750 * face_coordinate 
+  angle = -92.16270739 * face_coordinate + 153.2617299
   print "get_mqtt_firing_angle: returning angle %.2f%s for face location %.3f" % (angle, DEGREE, face_coordinate)
-  return angle
+  return max([0, min([angle, 180])])
 
 
 def shutdown():
-    flag_shutdown.set()
-    rest()
-    camera.close()
+  flag_shutdown.set()
+  rest()
+  camera.close()
 
 # The callback for when the client receives a CONNACK response from the server.
 def on_connect(client, userdata, flags, rc):
-    print("Connected with result code "+str(rc))
+  print("Connected with result code "+str(rc))
 
-    # Subscribing in on_connect() means that if we lose the connection and
-    # reconnect then subscriptions will be renewed.
-    client.subscribe("/merakimv/Q2EV-2TWA-ZJDL/raw_detections")
+  # Subscribing in on_connect() means that if we lose the connection and
+  # reconnect then subscriptions will be renewed.
+  client.subscribe("/merakimv/Q2EV-2TWA-ZJDL/raw_detections")
 
 # The callback for when a PUBLISH message is received from the server.
 def on_message(client, userdata, msg):
-    try:
-        persons = map(lambda p: p['x0'] - p['x1'], json.loads(msg.payload)['objects'])
-      
-        global global_angle
-        global_angle = get_mqtt_firing_angle(min(persons))
-        print "person at %.2f" % global_angle
-        # [{u'frame': 8620, u'oid': 219, u'y1': 0.531, u'y0': 1, u'x0': 0.394, u'x1': 0.231, u'type': u'person'}]
-    except:
-      print "no person"
-      return
+  try:
+    persons = map(lambda p: (p['x0'] - p['x1'])/2 + p['x0'], json.loads(msg.payload)['objects'])
+    print persons
+    
+    global global_angle
+    global_angle = get_mqtt_firing_angle(max(persons))
+    global global_person
+    global_person = True
+    print "person at %.2f" % global_angle
+    # [{u'frame': 8620, u'oid': 219, u'y1': 0.531, u'y0': 1, u'x0': 0.394, u'x1': 0.231, u'type': u'person'}]
+  except:
+    print "no person"
+    global global_person 
+    global_person = False
+    return
 
 if __name__ == "__main__":
   init()
@@ -232,8 +240,8 @@ if __name__ == "__main__":
 
   #t_camera = Thread(target=lambda: get_image())
   #t_camera.start()
-  #t_fire = Thread(target=fire)
-  #t_fire.start()
+  t_fire = Thread(target=fire)
+  t_fire.start()
 
   while True:
     try:
@@ -252,7 +260,11 @@ if __name__ == "__main__":
     t_aim = Thread(target=lambda: aim(angle, "fire"))
     t_aim.start()
 
-    flag_fire.set()
+    if global_person:
+      flag_fire.set()
+    else:
+      flag_fire.clear()
+
     t_aim.join()
 
 print "main: done\n",
